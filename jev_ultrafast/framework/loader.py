@@ -160,6 +160,9 @@ def _validate_expect(expect, where):
             item.get("equals") is not None or item.get("min") is not None or item.get("max") is not None
         ):
             raise CaseError(f"{spot}: element_count 必须提供 equals / min / max 之一")
+        if kind == "element_count" and not item.get("label_contains"):
+            # 缺了它 checker 会 KeyError，报成"断言执行出错"而不是"用例写错了"。
+            raise CaseError(f"{spot}: element_count 必须提供 label_contains")
         threshold = item.get("threshold")
         if threshold is not None and not 0 <= float(threshold) <= 1:
             raise CaseError(f"{spot}: threshold 必须在 0–1 之间")

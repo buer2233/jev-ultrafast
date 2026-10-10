@@ -231,6 +231,39 @@ def _wait_steps_split(waits, threshold_ms):
     return long_waits, short
 
 
+# 终局前的「落定」等待（秒）。判据与首屏那次同一套（browser.wait_until_stable）：
+# 连续 `steady_seconds` 秒元素/指纹/资源条数都不变才算稳，超时就用当下这一眼。
+# 为什么不能省：见 `_settle_before_verdict`。
+TERMINAL_SETTLE_TIMEOUT_S = 15
+TERMINAL_SETTLE_STEADY_S = 5.0
+
+
+def _settle_before_verdict(agent):
+    """终局前给页面一次「落定」的机会（有界），然后再取终局快照。
+
+    **为什么必须有**：模型是看着当前画面判 done/blocked 的，而 E9 的提交是异步的——
+    按钮点下去之后页面要好几秒才关。实测（2026-10-10，TC02）：同一段轨迹
+    （点模板 → 点「提 交」，只有 2 个动作）**有时过、有时不过**，差别只在终局读页面那一秒
+    提交落没落地。断言判的应该是**动作的结果**，不是半路快照。
+
+    这**不是放宽判定**：落定之后该失败的照样失败——真卡住的页面等不稳，超时就用
+    当下这一眼，如实报，还会在报告里留下这次等待。
+
+    **刻意不受 `--wait-stable` 管**：那个开关省的是"决策前不再等渲染"（用更多付费决策
+    换时间），这里保的是"终局判的是结果"——与 input_sync 那段等待同一条理由。
+
+    它产生的等待观测值留在 `agent.browser.waits` 里，由调用方渲染成报告步骤。
+    """
+    try:
+        agent.browser.wait_until_stable(timeout=TERMINAL_SETTLE_TIMEOUT_S, interval=0.4,
+                                        steady_seconds=TERMINAL_SETTLE_STEADY_S)
+        agent.state["page"] = agent.browser.observe(screenshot=False)
+    except Exception:            # noqa: BLE001
+        # 等不等得到都不该把用例判成 broken：用当下的页面判，结论照常。
+        # （这里只吞"落定"本身的异常——断言阶段的异常一律照原样抛出去。）
+        pass
+
+
 def _collect_waits(agent, threshold_ms):
     """取走本轮累积的等待观测值并按门槛切分。
 
@@ -248,9 +281,13 @@ def _wait_title(label, steps):
     `steps=None` 专用于首屏那一次：它发生在 `Browser.__init__` 里、循环还没开始，
     所以渲染成【前置】步骤，**不占步数编号**（否则第 1 步的编号会被它占掉，
     与「决策/执行」的编号就对不上了）。
+    `steps="终局"` 用于终局判定前那次落定等待（见 `_settle_before_verdict`）：
+    它同样不占步数编号——循环已经结束，没有"第 N 步"可挂。
     """
     if steps is None:
         return f"前置：等待{label}（首屏）"
+    if steps == "终局":
+        return f"终局：等待{label}（页面落定）"
     return f"第 {steps} 步 · 等待（{label}）"
 
 
@@ -615,6 +652,12 @@ def _execute_case(case, options, state):
             _emit_wait_steps(long_waits, steps)
             if discarded:
                 continue
+
+        # 终局前让页面落定，再取终局快照——理由见 `_settle_before_verdict`。
+        # 这一步产生的等待要**在断言之前**渲染成步骤：它解释的是"为什么终局多花了几秒"，
+        # 报告里看不见的话，读报告的人只会觉得这条用例莫名变慢了。
+        _settle_before_verdict(agent)
+        _emit_wait_steps(_collect_waits(agent, threshold_ms)[0], "终局")
 
         snapshot = agent.snapshot()
     finally:

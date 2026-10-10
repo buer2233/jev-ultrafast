@@ -128,8 +128,21 @@ def check_element_value(page, expect, _ctx):
 
 
 def check_element_count(page, expect, _ctx):
+    """按 label 子串数元素；可选 `role=` 只数某个角色的那批。
+
+    **为什么需要 role 过滤**：页面上同一个标题可能同时出现在**两个不同的表面**——
+    E9 的待办列表里有一行，右下角「有流程到达」通知浮层里还有一条（实测 2026-10-10）。
+    通知不可关、不自动消失，会把「这条流程已经离开我的待办」这类断言**污染成永远红**。
+    两者的区别是角色：列表行是 `link`，通知条目是别的角色。**断言该落在列表上**，
+    就按 `role: link` 数——这不是放宽，是把话说准。
+    """
     needle = expect["label_contains"]
-    matches = [a for a in page.get("actions", ()) if needle in (a.get("label") or "")]
+    wanted_role = expect.get("role")
+    matches = [
+        a for a in page.get("actions", ())
+        if needle in (a.get("label") or "")
+        and (wanted_role is None or a.get("role") == wanted_role)
+    ]
     count = len(matches)
     if "equals" in expect:
         ok, wanted = count == int(expect["equals"]), expect["equals"]
@@ -137,11 +150,12 @@ def check_element_count(page, expect, _ctx):
         ok, wanted = count >= int(expect["min"]), f"≥{expect['min']}"
     else:
         ok, wanted = count <= int(expect["max"]), f"≤{expect['max']}"
+    scope = f"（限定 role={wanted_role}）" if wanted_role else ""
     return {
         "ok": ok,
-        "detail": f"匹配 {needle!r} 的元素数量期望 {wanted}，实际 {count}",
-        "evidence": {"label_contains": needle, "count": count, "expected": wanted,
-                     "labels": [a.get("label") for a in matches][:10]},
+        "detail": f"匹配 {needle!r} 的元素数量{scope}期望 {wanted}，实际 {count}",
+        "evidence": {"label_contains": needle, "role": wanted_role, "count": count,
+                     "expected": wanted, "labels": [a.get("label") for a in matches][:10]},
     }
 
 

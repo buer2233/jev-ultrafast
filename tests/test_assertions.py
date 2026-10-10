@@ -29,6 +29,26 @@ def test_text_not_contains_still_reports_the_failure():
     assert "但出现了" in result["detail"]
 
 
+def test_element_count_role_filter_counts_only_that_role():
+    """同一标题出现在两个表面时，按 role 只数列表行。
+
+    实测（2026-10-10，E9 待办/已办）：列表里那行是 `link`，右下角「有流程到达」
+    通知浮层里那条是别的角色；浮层不可关、不自动消失。不带 role 过滤会把通知一起数进去，
+    于是"这条流程已离开我的待办"永远红。role 过滤不是放宽，是把话说准。
+    """
+    page = _page(actions=[
+        {"id": "e1", "label": "jev-wf_1_tc03", "role": "button"},   # 通知浮层
+    ])
+    assert assertions.check_element_count(
+        page, {"label_contains": "jev-wf_1_tc03", "role": "link", "equals": 0}, None)["ok"] is True
+    assert assertions.check_element_count(
+        page, {"label_contains": "jev-wf_1_tc03", "equals": 0}, None)["ok"] is False
+
+    listed = _page(actions=[{"id": "e1", "label": "jev-wf_1_tc03", "role": "link"}])
+    assert assertions.check_element_count(
+        listed, {"label_contains": "jev-wf_1_tc03", "role": "link", "equals": 0}, None)["ok"] is False
+
+
 def test_element_absent_tells_the_truth_when_passing():
     result = assertions.check_element_absent(_page(), {"label": "提交"}, None)
     assert result["ok"] is True

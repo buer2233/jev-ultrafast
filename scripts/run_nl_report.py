@@ -22,6 +22,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+# 本机 Python stdout 是 GBK（cp936）：脚本里的 `⚠️` 不在 GBK 字符集里，输出被重定向
+# 到文件/管道时会把 print 打成 UnicodeEncodeError（2026-10-10 在 serve_report.py 上
+# 实测同类崩溃）。编码不动（控制台里中文照常显示），只把编不出来的字符替换成 `?`。
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(errors="replace")
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
@@ -83,7 +90,9 @@ def main(argv=None):
         f"\n报告目录：{report_dir}\n"
         "⚠️ 不要用 file:// 直接打开 index.html —— Allure 是前端路由应用，"
         "点 Categories 之类会再去拉 data/*.json，file:// 下会被浏览器拦掉。\n"
-        f'请执行：allure open "{report_dir}"'
+        f'请执行：allure open "{report_dir}"\n'
+        "要把报告发给别的电脑看（allure open 只绑 127.0.0.1，别人连不上）：\n"
+        "  uv run python scripts/serve_report.py        # 一个地址永远指向最新一份报告"
     )
     return pytest_code
 

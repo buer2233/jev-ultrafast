@@ -93,6 +93,11 @@ allure generate report/allure-results -o report/allure-report --clean
 报告是静态 HTML，直接给用户路径 `report/allure-report/index.html`；
 需要交互浏览就用 `allure open report/allure-report`。
 
+要把报告给**别的电脑**看（`allure open` 与 IDE 内置服务器都只绑 127.0.0.1，别人连不上）：
+`uv run python scripts/serve_report.py`——绑 `0.0.0.0:8899` 并打印可分享的 IP 地址；缺省
+**跟随最新**（`/` 每次请求都跳到当时最新一份，同事存一个地址即可），传报告目录名则钉住那一份。
+打不开先查防火墙（提示与放行命令在脚本输出 / `--help` 里）。
+
 报告里能看到：epic → feature → story 三层分组（story 就是用例的 `name`）、
 每个决策周期的 step 及其操作概率、写入的文本、断言证据与截图、以及断言汇总。
 

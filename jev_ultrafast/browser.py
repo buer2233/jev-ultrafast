@@ -21,6 +21,31 @@ MARKER = f"(() => {{ const state={READ_STATE}; return state?.marker ?? null; }})
 # 超时设长不会拖慢正常调用——只有真正卡住时才会等满。
 CDP_TIMEOUT = 30
 
+# 只读调用的传输层重试：次数与退避。
+#
+# **为什么可以重发**：只用于 `evaluate` / `observe` 这两条**只读**路径——它们不发鼠标事件、
+# 不改页面状态，重发不可能重复提交。这与 `model.post_json` 对连接失败/超时的重试是同一条
+# 理由（见 AGENTS.md「传输层故障与 429 同等对待」）。
+#
+# **为什么需要**：超时是**偶发**的，而且与页面状态无关。实测（2026-10-10）：
+#   · TC02 首跑 `Runtime.evaluate timed out after 5s`（当时的默认值）→ broken，重跑就过；
+#   · 把超时放宽到 30 秒后，同一位置又见过一次 `timed out after 30s` → 同样重跑就过。
+# 表现都一样：整条用例 broken，**与"页面/被测功能有问题"长得一模一样**。
+# 有界重发把它变成"多花半秒"，而不是白跑一条用例。
+OBSERVE_ATTEMPTS = 2
+OBSERVE_RETRY_PAUSE_S = 0.5
+
+
+def _retry_read(operation):
+    """跑一个**只读**操作，传输层超时有界重发（见 OBSERVE_ATTEMPTS）。"""
+    for attempt in range(1, OBSERVE_ATTEMPTS + 1):
+        try:
+            return operation()
+        except TimeoutError:
+            if attempt == OBSERVE_ATTEMPTS:
+                raise
+            time.sleep(OBSERVE_RETRY_PAUSE_S)
+
 # 视口尺寸（CSS px；DPR=1 所以也等于设备 px）。
 #
 # 这是**一个基准三处共用**：`setDeviceMetricsOverride` 拿它定视口、截图与录屏帧的尺寸
@@ -306,6 +331,14 @@ class Browser:
             return browser_operation({**request, "session": self.session})
 
     def call(self, method, **params):
+        # IPC 响应超时统一放宽到 CDP_TIMEOUT。`browser_harness` 的默认是 **5 秒**，对 E9 这类
+        # 重页面不够：这里发出的 `Runtime.evaluate` 里有 `fresh()` 用的页面指纹——它要跑一遍
+        # 完整的 snapshot.js（实测 130 行的列表页就能压到 5 秒以上）。超 5 秒的表现是
+        # `_IPCResponseTimeout`，整条用例直接 broken，**而且与"页面有问题"长得一模一样**。
+        # 实测（2026-10-10，TC02 首跑）：`Runtime.evaluate timed out after 5s`，重跑就过。
+        # 守护进程侧（browser_operation）早就放宽到 30 秒了，这里漏了同一件事。
+        # 放宽不拖慢正常调用：只有真正卡住才会等满。
+        params.setdefault("_response_timeout", CDP_TIMEOUT)
         try:
             return cdp(method, session_id=self.session, **params)
         except RuntimeError as error:
@@ -315,7 +348,8 @@ class Browser:
             return cdp(method, session_id=self.session, **params)
 
     def evaluate(self, expression):
-        response = self.call("Runtime.evaluate", expression=expression, returnByValue=True)
+        response = _retry_read(
+            lambda: self.call("Runtime.evaluate", expression=expression, returnByValue=True))
         if response.get("exceptionDetails"):
             raise StalePage("Document changed during evaluation")
         return response.get("result", {}).get("value")
@@ -370,7 +404,8 @@ class Browser:
             self._record_wait("input_sync", started, trigger=action["kind"])
         for attempt in range(10):
             try:
-                return self._operation({"operation": "observe", "screenshot": screenshot})
+                return _retry_read(
+                    lambda: self._operation({"operation": "observe", "screenshot": screenshot}))
             except StalePage:
                 if attempt == 9:
                     raise

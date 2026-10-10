@@ -53,26 +53,47 @@
   };
   // 元素 → {x, y, covered}（x/y 是**顶层文档视口坐标**）；取不到则 null（等于"看不见，别点"）。
   //
-  // covered 是"中心点上压着别的东西"，两层都要过：
+  // **取点用客户矩形而不是联合包围盒。** 行内元素**换行**时包围盒是多行的并集，
+  // 它的中心会落在**两行之间的空隙**上——那里 elementFromPoint 命中的是父元素
+  // （E9 的流程标题就是这种两行 `<a>`，命中的是它所在的 `<td>`），于是这个元素被判成
+  // "covered"。后果不止是少一个候选：`model._drop_covered()` 在**同一种操作还有未遮挡
+  // 候选时会把被遮挡的整类剔掉**，于是列表里十行流程标题从模型眼前整体消失。
+  // 实测（2026-10-10，TC08）：45 步里一次都没点到过流程行，全在点筛选器空转；
+  // 而用真鼠标点同一行的**第一行文字**，表单是会打开的（新标签页）——所以那是误判。
+  //
+  // covered 是"这个点上压着别的东西"，两层都要过：
   //   · 内层：自己文档的 elementFromPoint 必须落回自己（或其后代）；
   //   · 外层：顶层那个点必须落在这个 frame 上——有东西盖住整个 iframe 时，内层判不出来。
-  // 与 browser.py 的判据一致（那里直接调这个函数），所以这里不放宽、也不多加。
+  // 与 browser.py 的判据一致（那里直接调这个函数），所以这里不放宽、也不多加：
+  // 只是**逐点**地试（客户矩形中心 → 包围盒中心），第一个既在视口内又没被压住的点胜出；
+  // 全被压住时，如实返回第一个点并标 covered（调用方照旧拒绝执行）。
   cache.geometry = (e, origins) => {
-    const r = e.getBoundingClientRect();
-    if (!r.width || !r.height) return null;
-    const x = r.x + r.width / 2, y = r.y + r.height / 2;
+    const box = e.getBoundingClientRect();
+    if (!box.width || !box.height) return null;
+    const points = [...e.getClientRects()]
+      .filter(r => r.width > 0 && r.height > 0)
+      .map(r => ({x: r.x + r.width / 2, y: r.y + r.height / 2}));
+    points.push({x: box.x + box.width / 2, y: box.y + box.height / 2});
     const doc = e.ownerDocument;
-    if (doc === document) {
-      if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) return null;
-      return {x: x, y: y, covered: !e.contains(document.elementFromPoint(x, y))};
+    const origin = doc === document ? null : (origins || scanFrames().origin).get(doc);
+    if (doc !== document && !origin) return null;   // 跨域 / 被缩放 / 超出递归深度
+    let blocked = null;
+    for (const p of points) {
+      let hit;
+      if (doc === document) {
+        if (p.x < 0 || p.y < 0 || p.x >= innerWidth || p.y >= innerHeight) continue;
+        hit = {x: p.x, y: p.y, covered: !e.contains(document.elementFromPoint(p.x, p.y))};
+      } else {
+        const tx = origin.dx + p.x, ty = origin.dy + p.y;
+        if (tx < 0 || ty < 0 || tx >= innerWidth || ty >= innerHeight) continue;
+        hit = {x: tx, y: ty,
+               covered: !e.contains(doc.elementFromPoint(p.x, p.y)) ||
+                        document.elementFromPoint(tx, ty) !== origin.frame};
+      }
+      if (!hit.covered) return hit;
+      if (!blocked) blocked = hit;
     }
-    const origin = (origins || scanFrames().origin).get(doc);
-    if (!origin) return null;                    // 跨域 / 被缩放 / 超出递归深度
-    const tx = origin.dx + x, ty = origin.dy + y;
-    if (tx < 0 || ty < 0 || tx >= innerWidth || ty >= innerHeight) return null;
-    return {x: tx, y: ty,
-            covered: !e.contains(doc.elementFromPoint(x, y)) ||
-                     document.elementFromPoint(tx, ty) !== origin.frame};
+    return blocked;
   };
   // 兜底取名：从"表单行"里找字段名。**只在上面整条链全部落空时才用**。
   //

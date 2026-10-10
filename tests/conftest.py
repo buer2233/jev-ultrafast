@@ -6,6 +6,7 @@
   · 把 E9 环境地址注入用例，供 {{ base_url }} 解析。
 """
 
+import json
 import os
 import socket
 import threading
@@ -19,7 +20,7 @@ from allure_commons import model2
 from allure_commons.utils import uuid4
 from allure_pytest.listener import AllureListener
 
-from jev_ultrafast.framework import e9_api, e9_config, e9_setup, e9_workflow
+from jev_ultrafast.framework import e9_api, e9_cleanup, e9_config, e9_setup, e9_workflow
 from jev_ultrafast.framework.loader import load_cases
 from jev_ultrafast.framework.runner import resolve_report_options
 
@@ -92,6 +93,11 @@ def pytest_addoption(parser):
     parser.addoption(
         "--wait-step-ms", dest="wait_step_ms", default=None, metavar="MS",
         help="等待耗时超过该毫秒数才独立成报告步骤（默认取配置）。",
+    )
+    parser.addoption(
+        "--keep-test-data", action="store_true", default=False,
+        help="调试用：收尾不清理测试数据（见 framework/e9_cleanup.py），留住现场。"
+             "等价于环境变量 JEV_NL_KEEP_TEST_DATA=1。",
     )
 
 
@@ -188,7 +194,7 @@ def eb_mode(e9_base_url):
 
 
 @pytest.fixture
-def nl_setup(nl_case, e9_base_url):
+def nl_setup(nl_case, e9_base_url, request):
     """按用例声明的 `setup:` 准备前置数据（**走接口**，见 framework/e9_setup.py）。
 
     为什么前置走接口而不是让 agent 在 UI 里建：源功能用例的前置常常是
@@ -200,28 +206,64 @@ def nl_setup(nl_case, e9_base_url):
       · 环境没搭这条流程路径 → `skip`，并说清缺什么（是环境没准备好）；
       · 前置准备过程本身出错 → **报错**，用例不会跑（是环境/配置有问题，不是被测功能有问题）；
       · 前置备好 → 把产出附进 Allure，用例照常跑。
+
+    **收尾也在这里**：用例判定**之后**再把测试自己造出来的实例推走
+    （`framework/e9_cleanup.py`）——失败轮次留下的残留，正是下一轮列表里
+    "标题极像的那一堆"，不清就会一轮比一轮难挑。收尾**绝不影响用例结论**：
+    清不掉只挂一段说明。调试时用 `--keep-test-data` / `JEV_NL_KEEP_TEST_DATA=1` 留住现场。
     """
     name = nl_case.get("setup") or "none"
     if name == "none":
         yield {}
-        return
-
-    if not e9_base_url:
+    elif not e9_base_url:
         pytest.skip("未配置 E9 环境（E9_BASE_URL / config.json），跳过需要前置数据的用例")
+    else:
+        request_name = nl_case.get("_wf_request_name") or ""
+        try:
+            facts = e9_setup.run(name, e9_base_url, request_name)
+        except e9_workflow.WorkflowPathMissing as error:
+            pytest.skip(f"前置 {name} 无法准备（环境缺流程路径）：{error}")
 
-    request_name = nl_case.get("_wf_request_name") or ""
+        # 前置产出挂进报告：用例失败时，第一件要判断的是"前置到底建出来没有"。
+        allure.attach(
+            f"前置：{name}\n流程实例名：{request_name}\n产出：{facts}",
+            "前置数据",
+            allure.attachment_type.TEXT,
+        )
+        yield facts
+
+    # 走到这里说明用例已经判定完（yield 已返回）。上面两条 pytest.skip 会抛异常，
+    # 根本到不了这里——那种情况本来也没有数据要清（前置都没建起来）。
+    _cleanup_after_case(nl_case, e9_base_url, request.config)
+
+
+def _keep_test_data(config=None):
+    """调试开关：留住现场，收尾不清理测试数据。"""
+    if os.environ.get("JEV_NL_KEEP_TEST_DATA") == "1":
+        return True
+    return bool(config is not None and config.getoption("--keep-test-data"))
+
+
+def _cleanup_after_case(case, base_url, config=None):
+    """用例收尾：把测试实例从各账号的待办里推走（见 `framework/e9_cleanup.py`）。
+
+    **绝不影响用例结论**：它在判定之后跑；清理失败只挂一段说明，不抛异常。
+    没有 E9 环境的用例（演示用例）没什么可清，直接跳过。
+    """
+    if not base_url or case.get("login", "none") == "none":
+        return
+    if _keep_test_data(config):
+        allure.attach("调试模式（--keep-test-data / JEV_NL_KEEP_TEST_DATA=1）：故意不清理，留住现场。",
+                      "收尾清理", allure.attachment_type.TEXT)
+        return
     try:
-        facts = e9_setup.run(name, e9_base_url, request_name)
-    except e9_workflow.WorkflowPathMissing as error:
-        pytest.skip(f"前置 {name} 无法准备（环境缺流程路径）：{error}")
-
-    # 前置产出挂进报告：用例失败时，第一件要判断的是"前置到底建出来没有"。
-    allure.attach(
-        f"前置：{name}\n流程实例名：{request_name}\n产出：{facts}",
-        "前置数据",
-        allure.attachment_type.TEXT,
-    )
-    yield facts
+        summary = e9_cleanup.cleanup(base_url)
+    except Exception as error:            # noqa: BLE001
+        allure.attach(f"收尾清理失败（不影响用例结论）：{type(error).__name__}: {error}",
+                      "收尾清理", allure.attachment_type.TEXT)
+        return
+    allure.attach(json.dumps(summary, ensure_ascii=False, indent=2),
+                  "收尾清理", allure.attachment_type.JSON)
 
 
 # --------------------------------- 共用测试基建 ---------------------------------

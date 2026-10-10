@@ -168,6 +168,41 @@ def main():
         assert browser.evaluate("window.rowPicked") is True
         passed.append("clickable table rows become candidates; clicking one runs the row's own handler")
 
+        # **换行的行内元素**也必须可点。E9 的流程列表把标题渲染成两行的 `<a>`
+        # （列窄、标题长，必然折行；实测客户矩形是 218–234 与 237–253，**中间空 3.2px**
+        # ——`line-height:19.2px` 而行盒只有 16px 高）。取点若只用联合包围盒的中心，
+        # 那个点正好落在**两行之间的空隙**上：elementFromPoint 命中的是它所在的 `<td>`，
+        # 于是整行被判 "covered"；再叠上 `model._drop_covered()`（同操作还有未遮挡候选时，
+        # 被遮挡的整类会被剔掉），十行标题会从模型眼前**整体消失**。
+        # 实测（2026-10-10，TC08）：45 步一步都没点到过流程行，全在点筛选器空转；
+        # 而真鼠标点它的第一行文字，表单是会打开的。这条钉住"取点用客户矩形"。
+        browser.call("Page.navigate", url="about:blank")
+        # 用 `white-space:pre-line` 的换行符强制折行：**不依赖字体度量**，
+        # 换行位置在哪台机器上都一样（用窄容器去逼折行会随字体宽度漂）。
+        browser.evaluate("document.body.innerHTML=" + repr("""
+          <a href="#" id="wrapped" style="white-space:pre-line;line-height:40px;font-size:12px"
+             onclick="window.wrappedClicked=true;return false">jev-wf_1009183640_
+e9-wf-submit-tc08</a>"""))
+        page = browser.observe(screenshot=False)
+        wrapped = next((a for a in page["actions"] if a["label"].startswith("jev-wf_")), None)
+        assert wrapped is not None, [a.get("label") for a in page["actions"]]
+        # 前提断言：包围盒中心**真的落在两行之间的空隙里**。不成立的话这条检查就退化成
+        # 普通元素，再也不会因为取点方式退化而变红——那就白写了。
+        # 判据与 snapshot.js 的取点口径一致：只数**有面积**的客户矩形。
+        gap = browser.evaluate("""(() => {
+          const a = document.querySelector('#wrapped'), box = a.getBoundingClientRect();
+          const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
+          const rects = [...a.getClientRects()].filter(r => r.width > 0 && r.height > 0);
+          const inAny = rects.some(r =>
+            cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom);
+          return {lineBoxes: rects.length, centerInGap: !inAny};
+        })()""")
+        assert gap["lineBoxes"] >= 2 and gap["centerInGap"], gap
+        assert not wrapped.get("covered"), wrapped
+        browser.act(wrapped, page)
+        assert browser.evaluate("window.wrappedClicked") is True
+        passed.append("a wrapped inline link stays clickable (hit point comes from its line boxes)")
+
         # 控件【当前值】不能被当字段名。antd 这类自绘下拉把选中值渲染成一层 div，不是
         # <select>/<option>，所以按标签名过滤拦不住它；行内最窄的那层文字于是变成"值"。
         # 实测（2026-09-24，E9「添加路径」弹窗）：「对应表单」那一行的放大镜被取名叫

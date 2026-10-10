@@ -29,7 +29,7 @@ xlsx 由 `uv run --with openpyxl python fixtures.py` 生成——这正是 SKILL
 | `rejects-image-without-guessing` | 图片被拒，**要求人工转写并明确禁止猜测** |
 | `output-is-utf8` | 产出按 UTF-8 可解码（本机控制台是 cp936，最易在这里回归） |
 | `loader-rejects-unknown-field` / `-duplicate-id` / `-bad-expect` | 三类写法错误都在**加载期**报出来 |
-| `repo-cases-follow-project-rules` | 仓库用例无内网字面量、无 ecid、负向对照 `reruns: 0` |
+| `repo-cases-follow-project-rules` | 仓库用例无内网字面量、无 ecid、`reruns` 与"预期成败"一致（预期失败的对照用例=0，其余不为 0） |
 | `graph-analysis-section-present` | 「先查图谱」章节在位、**排在动手写 YAML 之前**，且写明本机无 E9 源码、图谱查不到 UI 元素定位 |
 | `graph-handoff-link-resolves` | 指向 `e9-graph-query` 的相对链接可达（任一方改名不会静默 404） |
 | `setup-names-documented` | SKILL 里列的命名前置与 `e9_setup.SETUPS` 一一对上（两份清单不会各说各话） |

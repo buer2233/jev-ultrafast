@@ -4,7 +4,7 @@
   · 【读者契约】skill 说 read_source.py 支持哪些格式、拒绝哪些输入——逐条验。
     全部免费，不调用模型。
   · 【产出契约】skill 产出的 YAML 必须过 loader，并且守住 AGENTS.md 里写明的规则
-    （不写内网字面量、不出现 ecid、负向对照必须 reruns: 0）。
+    （不写内网字面量、不出现 ecid、`reruns` 与"预期成败"一致）。
 
 用法：
     uv run python .claude/skills/nl-case-author/evals/run.py
@@ -19,6 +19,10 @@ import sys
 from pathlib import Path
 
 SKIP = object()  # 三态结果里的"这次没法判定"，见 ev_converted_fixture_is_loadable
+
+# "预期 pytest 会红"的标记：名字或标签里带这些词的，就是自检/对照用例。
+# 加标记意味着**要承担"它红了不算回归"的责任**——所以只给真正的对照用例用。
+EXPECTED_FAILURE_MARKERS = ("应失败", "expected-failure", "should-fail")
 
 ROOT = Path(__file__).resolve().parents[4]
 HERE = Path(__file__).resolve().parent
@@ -233,13 +237,33 @@ def ev_repo_cases_follow_project_rules():
             if INTERNAL.search(line):
                 problems.append(f"{path.name}: 出现内网地址字面量 -> {line.strip()[:50]}")
     cases = load_cases()
+    # `reruns` 按【预期 pytest 成败】定，**不按 `negative` 标签**。
+    #
+    # 2026-10-10 与用户确认后改的口径。原来写的是"负向对照必须 reruns: 0"，
+    # 把两个不同的东西混成了一个词：
+    #   · `demo-negative-missing-content`（通用演示 · 负向对照（应失败））——
+    #     **预期 pytest 就是红的**，重跑只是白花一次决策 → 必须 0；
+    #   · E9 的 TC07/TC08——"负向"说的是**断言方向**（断言页面上没有某样东西），
+    #     正常是通过的。给它设 0 的代价实测过：一次 `Model connection failed`
+    #     （传输层抖动，与它测的东西无关）就直接红，而重跑一次是安全的、
+    #     也不会掩盖真实缺陷（重跑跑的仍是同一套只读判定）。
     for case in cases:
-        negative = "negative" in (case.get("tags") or []) or "负向" in case.get("name", "")
-        if negative and case.get("reruns") != 0:
-            problems.append(f"{case['id']}: 负向对照必须设 reruns: 0，实际 {case.get('reruns')!r}")
+        text = f"{case.get('name', '')} {' '.join(case.get('tags') or [])}"
+        expected_failure = any(marker in text for marker in EXPECTED_FAILURE_MARKERS)
+        if expected_failure and case.get("reruns") != 0:
+            problems.append(
+                f"{case['id']}: 预期失败的自检/对照用例必须设 reruns: 0，实际 {case.get('reruns')!r}"
+                "（重跑只会白花一次模型调用）"
+            )
+        elif not expected_failure and case.get("reruns") == 0:
+            problems.append(
+                f"{case['id']}: 不设 reruns: 0 —— '负向'说的是断言方向，不是'预期 pytest 失败'；"
+                "瞬时的传输层/环境抖动与它无关，重跑一次是安全的。只有预期失败的自检用例才设 0。"
+            )
     if problems:
         return False, "; ".join(problems)
-    return True, f"{len(sources)} 个文件 / {len(cases)} 条用例：无内网字面量、无 ecid、负向对照 reruns=0"
+    return True, (f"{len(sources)} 个文件 / {len(cases)} 条用例：无内网字面量、无 ecid、"
+                  f"reruns 与'预期成败'一致（预期失败=0，其余不为 0）")
 
 
 def ev_converted_fixture_is_loadable():
