@@ -25,6 +25,8 @@ FLAGS = {
     "run-jev": {"--no-browser"},
     "nl-case-author": set(),
     "nl-case-run": {"--paid"},
+    # 全离线、免费，所以不接受任何开关（只认编排层无条件追加的 --list）
+    "e9-graph-query": set(),
 }
 
 

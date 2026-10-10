@@ -429,6 +429,76 @@ def test_repeated_no_ops_withhold_that_target_from_the_choices(runner, monkeypat
     assert [a for a in remaining if a["id"] == "e2"]
 
 
+def test_a_field_with_no_value_is_a_discard_not_a_case_killing_error(runner, monkeypatch):
+    """文本模型说"这个字段没有值"时，要作废这次决策并重选——不是把整条用例崩掉。
+
+    这是**契约不一致**，不只是模型偶发选错：`questions.TEXT_VALUE` 把
+    `{"text": null}` 定义成合法回复（"If a required value is missing"），
+    而执行器收到它就抛异常。提示词承诺了一个协议，执行器不认。
+
+    实测（2026-10-09，E9 新建流程 TC01）：goal 明说只填「标题」，模型挑了「签字意见」，
+    文本模型照约定回 null，用例当场死在 ValueError 上——而那一刻**什么都没执行过**，
+    本该只是一次"这条决策作废、重新选"。
+
+    两条断言缺一不可：
+      · `browser.act` 一次都没调 → 它确实发生在任何浏览器动作之前，所以重选是安全的
+        （AGENTS.md 的判据：决策可以重发，动作不可以）；
+      · 记进 discards 且 target_level=True → 模型看得到"这条路走不通"，
+        够阈值后这个字段还会从候选里被剔掉，而不是空转到步数上限。
+    """
+    monkeypatch.setattr(
+        loop, "field_text", Mock(side_effect=model.NoTextValue("no value", missing=True))
+    )
+    with pytest.raises(model.NoTextValue):
+        runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+
+    runner.state["browser"].act.assert_not_called()
+    assert runner.state["history"] == []
+    assert runner.state["decision"] is None
+    (recorded,) = runner.state["discards"]
+    assert (recorded["node"], recorded["kind"]) == (10, "fill")
+    assert recorded["target_level"] is True
+
+
+def test_a_malformed_text_helper_answer_does_not_blame_the_target(runner, monkeypatch):
+    """协议故障（回了个不合约定的结构）与目标无关，**不能牵连字段**。
+
+    两种都记进 discards、都能重选；区别只在 target_level——把它也标成 True，
+    够阈值后就会把一个**无辜的**字段从候选里剔掉，而模型再也选不到它。
+    """
+    monkeypatch.setattr(
+        loop, "field_text", Mock(side_effect=model.NoTextValue("unparseable", missing=False))
+    )
+    with pytest.raises(model.NoTextValue):
+        runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+
+    runner.state["browser"].act.assert_not_called()
+    assert runner.state["discards"][0]["target_level"] is False
+
+
+def test_repeated_missing_values_withhold_that_field_from_the_choices(runner, monkeypatch):
+    """同一个字段被"没有值"拒到阈值次数后，就不该再出现在候选里。
+
+    这才是这次修复**真正的目的**：不是"把异常改成重试"——那只会空转到步数上限，
+    而是让模型在反馈里看到这条路走不通，且到阈值后连选都选不到。
+    实测 TC01 的失败正是"模型挑错字段"，所以必须让它挑不到。
+    """
+    monkeypatch.setattr(
+        loop, "field_text", Mock(side_effect=model.NoTextValue("no value", missing=True))
+    )
+    for _ in range(model.REFUSED_TARGET_THRESHOLD):
+        runner.state["decision"] = decision()
+        with pytest.raises(model.NoTextValue):
+            runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+        runner.state["decision"] = None
+
+    assert len(runner.state["discards"]) == model.REFUSED_TARGET_THRESHOLD
+    remaining = model._available_actions(runner.state["page"], runner.state["discards"])
+    assert not [a for a in remaining if a["id"] == "e1"]
+    # 同节点的 click（e2）不受牵连：判据是 (node, kind) 而不是 node。
+    assert [a for a in remaining if a["id"] == "e2"]
+
+
 def test_discarded_attempts_are_sent_to_the_model(monkeypatch):
     """丢弃记录必须真的送进请求体——只在库里攒着等于没补。"""
     seen = {}
@@ -634,13 +704,29 @@ def test_fingerprint_tracks_values_and_identity_not_screenshots():
 
 
 @pytest.mark.parametrize(
-    "content", ["Thinking: Zurich", '{"text":null}', '{"text":"Zurich","extra":true}', '{"text":123}']
+    "content, missing",
+    [
+        ("Thinking: Zurich", False),                # 根本不是 JSON
+        ('{"text":null}', True),                    # 合法回复：这个字段按 goal 没有值
+        ('{"text":"Zurich","extra":true}', False),  # 结构不合约定（多了键）
+        ('{"text":123}', False),                    # 类型不对
+    ],
 )
-def test_text_helper_rejects_invalid_values(monkeypatch, content):
+def test_text_helper_rejects_invalid_values(monkeypatch, content, missing):
+    """四种坏结果都拒，但**只有 null 算"目标选错了"**。
+
+    `missing` 就是这个责任方标记，调用方据它决定要不要把字段从候选里剔掉
+    （见 agent.py 的 `target_level`）。把 '{"text":null}' 也标成 False，
+    修好的那个 bug 会换个方式回来：模型每轮照样挑错字段，一直挑到步数上限。
+    """
     monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
     monkeypatch.setattr(model, "post_json", Mock(return_value={"choices": [{"message": {"content": content}}]}))
-    with pytest.raises(ValueError, match="nothing typed"):
+    # 断言具名异常而不是 ValueError：`NoTextValue` 是 ValueError 的子类，
+    # 写父类会让"以后有人把它改成普通 ValueError"悄悄通过，而 runner 里那条
+    # `except NoTextValue` 就再也不会命中——故障会退化成"又崩一次"。
+    with pytest.raises(model.NoTextValue, match="nothing typed") as raised:
         model.field_text({"goal": "Find a flight"})
+    assert raised.value.missing is missing
 
 
 def test_navigation_during_prediction_reobserves_without_action(runner):

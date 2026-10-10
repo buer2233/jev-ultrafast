@@ -77,13 +77,34 @@ def collected_ids(*args):
 # ------------------------------------------------------------------ free
 
 def ev_collects_e9_dir_only():
-    """--cases-dir 是【替换】默认目录，不是追加。"""
+    """--cases-dir 是【替换】默认目录，不是追加。
+
+    判据是**演示用例不许漏进来**——那才是「追加而不是替换」这个 bug 的信号。
+    初版把它写成 `ids != ["e9-workflow-add-bym"]`（硬编码的单条清单），
+    结果是 cases/e9/ 一多出用例（workflow_design.yaml 加了 3 条）就永久误报：
+    它守的其实是「我当时数过的那个条数」，而不是「替换语义」。
+    断言要和它声称守的东西对齐，否则红了也说不清是缺陷还是又加了一条用例。
+    """
     ids, _ = collected_ids("--cases-dir", "cases/e9")
     if ids is None:
         return False, "收集失败"
-    if ids != ["e9-workflow-add-bym"]:
-        return False, f"期望只收集到 e9-workflow-add-bym，实际 {ids}"
-    return True, "--cases-dir cases/e9 只收集到 1 条（e9-workflow-add-bym）"
+    if not ids:
+        return False, "cases/e9 下一条用例都没收集到"
+    leaked = [case_id for case_id in ids if case_id.startswith("demo-")]
+    if leaked:
+        return False, f"--cases-dir 没有替换默认目录，演示用例漏了进来：{leaked}"
+    declared = len(re.findall(r"^\s*-\s+id:", _read_e9_yaml(), re.MULTILINE))
+    if len(ids) != declared:
+        return False, f"cases/e9 的 YAML 里声明了 {declared} 条，实际收集到 {len(ids)} 条：{ids}"
+    return True, f"--cases-dir cases/e9 只收集该目录的 {len(ids)} 条，无演示用例漏入"
+
+
+def _read_e9_yaml():
+    """把 cases/e9 下所有 YAML 拼起来，用于数 `- id:` 声明。"""
+    return "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted((ROOT / "cases" / "e9").glob("*.yaml"))
+    )
 
 
 def ev_case_filter_narrows_to_one():

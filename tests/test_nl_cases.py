@@ -11,8 +11,12 @@ from jev_ultrafast.framework import reporting, run_case
 
 
 @pytest.mark.nl_case
-def test_natural_language_case(nl_case):
+def test_natural_language_case(nl_case, nl_setup):  # noqa: ARG001  (nl_setup 靠依赖关系生效)
     """执行一条自然语言用例。
+
+    第二个参数 `nl_setup` 不做别的，只靠**依赖关系**保证它先跑：
+    它按用例声明的 `setup:` 走接口把前置数据备好（见 conftest.py）。
+    前置没备好时它要么 skip、要么直接报错，**不会**让用例带着坏前置去跑。
 
     重新发起时用 pytest-rerunfailures 做【用例级】重跑：
         uv run pytest tests/test_nl_cases.py --reruns 1

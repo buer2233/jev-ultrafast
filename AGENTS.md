@@ -22,18 +22,24 @@
 | 用例 | `cases/**/*.yaml` | 用户只写自然语言目标与预期结果 |
 | 用例入口 | `tests/test_nl_cases.py` + `tests/conftest.py` | 把 YAML 收集成 pytest 用例 |
 | 演示素材 | `examples/` | 演示用例副本、演示报告、演示录屏（**有意入库**，见下方「凭据与仓库边界」的例外） |
-| 技能 | `.claude/skills/nl-case-author`、`nl-case-run` | 前者把各种格式的功能用例转成 YAML（`cases/e9/`），后者按用户描述挑用例、执行、出 Allure 报告 |
+| 技能 | `.claude/skills/nl-case-author`、`nl-case-run`、`e9-graph-query` | 第一个把各种格式的功能用例转成 YAML（`cases/e9/`），第二个按用户描述挑用例、执行、出 Allure 报告；`e9-graph-query` 查 E9 知识图谱（本机没有 E9 源码，只能走 MCP），供前两者定位页面路由与操作链路 |
 
 - **框架是外挂的一层。** 库本体的状态机与各类校验的**语义**不因框架需求而改变；框架只负责用例加载、断言判定与报告。
 - 为让内核在真实站点上可用，已对 `snapshot.js` / `browser.py` 做过一批**通用性扩展**（不针对任何特定站点）：元素发现范围、跟随新标签页、执行前滚动、登录态注入、重页面的 CDP 超时、页面稳定等待。**这些扩展只扩大"能看见/能操作什么"，不放松"怎么校验"**——新增动作同样要过新鲜度与遮挡校验。
 - 继续扩展时守住这条线：**不要**因为某个站点难搞就放宽安全校验（例如为绕开遮挡检查而跳过 `elementFromPoint`）。那类改法会把"安全的自动化"变成"会误点的自动化"。
 - **不要给库本体打 `allure.step` 之类装饰器。** `demo.py`（inspector）也依赖库本体，不应被报告框架污染；而且步骤标题需要动态内容，装饰器做不到。步骤包装放在 `framework/runner.py`。
 
-## 写用例前必须知道的两件事
+## 写用例前必须知道的三件事
 
 - **断言只对【终局页面】求值。** 中间步骤做过什么，终局断言看不见——所以要校验的东西
   必须落在最后一站的页面上。典型做法是把"这一步真的发生了"编码进终局 URL 或终局文案。
 - **agent 没有"后退"动作。** 路径只能前进，站点内换页要靠页面上的导航，不能指望浏览器历史。
+- **一条用例只有一个登录身份。** `runner._login_cookies()` 在起浏览器**之前**注入一次
+  cookie，中途不换人。所以「人员01 建 → 人员02 会签 → 人员03 审批」这类**跨人流转链
+  在 UI 用例里表达不了**——它得走接口、在 fixture 里做掉，用例只用 `setup:` 声明
+  "动手之前环境里必须先有什么"（见 `framework/e9_setup.py` 与
+  `.claude/skills/nl-case-author/SKILL.md` 的 `setup:` 一节）。
+  **跨人那一段由接口走通、不是 UI 走通的**，交付时要如实说明。
 
 另外：**元素必须落在当前视口内才会成为候选**（`snapshot.js` 的几何过滤）。屏幕外的目标
 要么让 goal 明确写"向下滚动，找到 X"，要么把这个动作拆成两步。
@@ -132,7 +138,7 @@ uv build
 # 浏览器真实控件校验，不调模型
 uv run python scripts/check_guards.py           # 期望 PASS: 26 browser guard checks
 
-# 三个 skill 的 evals：真起 inspector、真跑读源脚本、真跑收集与报告链路
+# 四个 skill 的 evals：真起 inspector、真跑读源脚本、真跑收集与报告链路（e9-graph-query 全离线）
 uv run python scripts/run_skill_evals.py        # 免费档
 uv run python scripts/run_skill_evals.py --paid # 含真跑用例（花钱）
 

@@ -12,13 +12,14 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import allure
 import allure_commons
 import pytest
 from allure_commons import model2
 from allure_commons.utils import uuid4
 from allure_pytest.listener import AllureListener
 
-from jev_ultrafast.framework import e9_api, e9_config
+from jev_ultrafast.framework import e9_api, e9_config, e9_setup, e9_workflow
 from jev_ultrafast.framework.loader import load_cases
 from jev_ultrafast.framework.runner import resolve_report_options
 
@@ -184,6 +185,43 @@ def eb_mode(e9_base_url):
         yield modeid
     finally:
         e9_api.delete_mode(session, e9_base_url, modeid)
+
+
+@pytest.fixture
+def nl_setup(nl_case, e9_base_url):
+    """按用例声明的 `setup:` 准备前置数据（**走接口**，见 framework/e9_setup.py）。
+
+    为什么前置走接口而不是让 agent 在 UI 里建：源功能用例的前置常常是
+    「人员01 建 → 两人会签 → 审批 → 归档」这样的跨人多节点链条，
+    让 agent 去点会把用例的步数预算耗在与被测目标无关的准备上，
+    而且"前置没建好"和"被测功能有问题"会混成同一个失败原因。
+
+    **三种结局要分清**（这正是把它做成 fixture 而不是写在用例里的原因）：
+      · 环境没搭这条流程路径 → `skip`，并说清缺什么（是环境没准备好）；
+      · 前置准备过程本身出错 → **报错**，用例不会跑（是环境/配置有问题，不是被测功能有问题）；
+      · 前置备好 → 把产出附进 Allure，用例照常跑。
+    """
+    name = nl_case.get("setup") or "none"
+    if name == "none":
+        yield {}
+        return
+
+    if not e9_base_url:
+        pytest.skip("未配置 E9 环境（E9_BASE_URL / config.json），跳过需要前置数据的用例")
+
+    request_name = nl_case.get("_wf_request_name") or ""
+    try:
+        facts = e9_setup.run(name, e9_base_url, request_name)
+    except e9_workflow.WorkflowPathMissing as error:
+        pytest.skip(f"前置 {name} 无法准备（环境缺流程路径）：{error}")
+
+    # 前置产出挂进报告：用例失败时，第一件要判断的是"前置到底建出来没有"。
+    allure.attach(
+        f"前置：{name}\n流程实例名：{request_name}\n产出：{facts}",
+        "前置数据",
+        allure.attachment_type.TEXT,
+    )
+    yield facts
 
 
 # --------------------------------- 共用测试基建 ---------------------------------

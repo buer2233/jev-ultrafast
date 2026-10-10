@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 from .browser import Browser, StalePage, TargetUnavailable
-from .model import action_space, choose, field_context, field_text
+from .model import NoTextValue, action_space, choose, field_context, field_text
 from .questions import MAX_STEPS
 
 
@@ -136,8 +136,14 @@ class Agent:
                 # 接住返回值写进 history：以前它是丢掉的，于是报告里"执行"步骤
                 # 拿不到浏览器到底执行了什么（browser.act 返回 {"executed": <action id>}）。
                 execute_result = state["browser"].act(action, page, text=text)
-            except StalePage as error:
+            except (StalePage, NoTextValue) as error:
                 # 记下【没落地】的尝试，然后原样重抛。
+                #
+                # 两类都进这个分支，共同点是**没有任何东西被执行过**（这才是"可以重来"的判据）：
+                #   · StalePage——页面在决策之后变了，动作被新鲜度校验挡下；
+                #   · NoTextValue——文本模型没能给出可写值（见 model.NoTextValue），
+                #     它发生在 field_text 里，也就是 browser.act 之前。
+                # 以前第二类会把整条用例崩掉；它本该是一次"这条决策作废、重新选"。
                 #
                 # 为什么必须在这里记：act 一抛错就走不到下面的 history.append，而 history 只装成功。
                 # 少了这份记录，模型看到的"最近动作"里完全没有"我试过这个、被拒了"——
@@ -167,7 +173,12 @@ class Agent:
                         "node": action.get("node"),
                         "document": (page.get("page_key") or [None])[0],
                         # 只有"目标本身不可用"才该被剔除；"页面刚好动了"是瞬时的，重选无妨。
-                        "target_level": isinstance(error, TargetUnavailable),
+                        # NoTextValue 例外地也看 `missing`：模型照约定回 null，说明**问题就在
+                        # 这个字段上**（goal 里它没有值），够次数就该从候选里剔；
+                        # 而解析失败那类（missing=False）是协议故障，与字段无关，
+                        # 牵连它会把一个无辜的字段剔掉。
+                        "target_level": isinstance(error, TargetUnavailable)
+                        or bool(getattr(error, "missing", False)),
                     }
                 )
                 raise

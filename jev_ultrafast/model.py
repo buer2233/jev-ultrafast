@@ -373,6 +373,30 @@ def reasoning_fields(base):
     return {"reasoning": {"enabled": False}}
 
 
+class NoTextValue(ValueError):
+    """文本模型没能给出可写入这个字段的值——**没有任何浏览器动作被执行过**。
+
+    为什么要与"页面过期"分开：`questions.TEXT_VALUE` 明确把 `{"text": null}` 定义成
+    **合法回复**（"If a required value is missing"），意思是"按这条 goal，这个字段没有
+    可填的值"。执行器收到它就抛异常判死整条用例，等于**提示词承诺了一个协议、
+    执行器不认**。实测（2026-10-09，E9 新建流程 TC01）：模型挑错了字段（goal 明说只填
+    「标题」，它却选了「签字意见」），文本模型照约定回 `{"text": null}`，
+    用例当场崩在 `ValueError` 上——**修的地方不是这句异常，是"崩"这个反应本身**：
+    此刻什么都没执行过，重决策完全安全（见 AGENTS.md「决策可以重发，动作不可以」，
+    判据是有没有东西被执行过）。
+
+    `missing` 区分责任方，调用方据此决定要不要把目标从候选里剔掉：
+      · `missing=True`：模型照约定回了 null——问题在**选中的目标**上（这个字段
+        按 goal 确实没值），与 `browser.TargetUnavailable` 同类，够次数就该剔；
+      · `missing=False`：返回结构不合约定（解析不了/空串/超长）——是**协议故障**，
+        与目标无关，不该牵连目标，否则会把一个无辜的字段剔掉。
+    """
+
+    def __init__(self, message, *, missing):
+        super().__init__(message)
+        self.missing = missing
+
+
 def field_text(context):
     key = os.environ.get("TEXT_MODEL_API_KEY")
     if not key:
@@ -398,13 +422,29 @@ def field_text(context):
             ],
         },
     )
+    # 四种坏结果分开报，因为**责任方不同**（见 NoTextValue 的注释）。共同的判据是
+    # 每条消息都带 "nothing typed"——它同时是既有测试的匹配串，也是这条契约的要点：
+    # 走到这里一定什么都没写进去。
     try:
         output = json.loads(result["choices"][0]["message"]["content"])
-        value = output["text"]
-        if set(output) != {"text"} or not isinstance(value, str) or not value.strip() or len(value) > 2000:
-            raise ValueError()
-    except (ValueError, KeyError, TypeError):
-        raise ValueError("Text helper returned no valid field value; nothing typed.") from None
+    except (ValueError, TypeError, KeyError, IndexError):
+        raise NoTextValue(
+            "Text helper returned unparseable output; nothing typed.", missing=False
+        ) from None
+    if not isinstance(output, dict) or set(output) != {"text"}:
+        raise NoTextValue(
+            f"Text helper returned unexpected shape {str(output)[:120]!r}; nothing typed.",
+            missing=False,
+        )
+    value = output["text"]
+    if value is None:
+        raise NoTextValue(
+            "Text helper reported no value for this field; nothing typed.", missing=True
+        )
+    if not isinstance(value, str) or not value.strip() or len(value) > 2000:
+        raise NoTextValue(
+            "Text helper returned no usable field value; nothing typed.", missing=False
+        )
     return value, {
         "model": model,
         "latency_ms": round((time.perf_counter() - started) * 1000),

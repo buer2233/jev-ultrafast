@@ -36,9 +36,10 @@ agent 会「做事」，但测试要的是「**可复现、可断言、可追溯
 ### 用例层
 
 - **一条 YAML 一条用例**：`id / name / url / login / goal / expect`，`goal` 就是自然语言；
-- **两个 skill 直接干活**：[`/nl-case-author`](../.claude/skills/nl-case-author/SKILL.md) 把
+- **三个 skill 直接干活**：[`/nl-case-author`](../.claude/skills/nl-case-author/SKILL.md) 把
   纯文本 / Excel / XMind / Word / CSV 的功能用例转成 YAML；[`/nl-case-run`](../.claude/skills/nl-case-run/SKILL.md)
-  按你的描述挑用例、执行、出报告；
+  按你的描述挑用例、执行、出报告；[`/e9-graph-query`](../.claude/skills/e9-graph-query/SKILL.md)
+  查 E9 知识图谱，供前两者定位页面路由与操作链路（本机没有 E9 源码，只能走 MCP）；
 - **免登录开跑**：接口登录后把 cookie 注入浏览器，用例里只写 `login: admin`；
 - **断言分两级**（可用类型见 [`framework/assertions.py`](../jev_ultrafast/framework/assertions.py)）：
 

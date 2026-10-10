@@ -15,6 +15,7 @@ import allure
 import jev_ultrafast.agent as agent_module
 
 from ..browser import StalePage
+from ..model import NoTextValue
 from . import e9_config, e9_login, encode, report_params, video
 from .assertions import check, combine, resolve_threshold
 from .config import (
@@ -162,8 +163,8 @@ def _latest_decision(agent):
     )
 
 
-def _reset_after_stale(agent):
-    """StalePage 的统一处理：丢弃决策 → 重新观察 → 状态回 ready。
+def _reset_after_discard(agent, *, reobserve=True):
+    """一次决策被丢弃后的统一收尾：丢弃决策 → （按需）重新观察 → 状态回 ready。
 
     与 `Agent.command("tick")` 的 except 分支逐行一致（`agent.py:59-64`）——
     那是库的既有语义。框架层复刻一份，是为了能自己控制步骤边界：
@@ -171,11 +172,17 @@ def _reset_after_stale(agent):
 
     刻意不直接调用 `command("tick")`：那样两者会挤在同一个步骤里，
     而且"执行"步骤会退化成事后补附件的空壳（时长恒为 0，见分析报告 §1.4）。
+
+    `reobserve=False`：丢弃的原因是**文本模型没给出可写值**（`model.NoTextValue`）。
+    那条路径在 `browser.act` 之前就返回了，页面按定义没变，重新观察只是白花一次快照。
+    仍复用同一个函数而不是另写一份，是为了让"丢弃决策"只有一个出口——
+    两条路径各写一遍，迟早会漂移，而漂移的表现是状态回不到 ready、循环空转。
     """
     state = agent.state
     state["decision"] = None
     state["status"] = "ready"
-    state["page"] = state["browser"].observe(screenshot=agent.screenshots)
+    if reobserve:
+        state["page"] = state["browser"].observe(screenshot=agent.screenshots)
     state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
 
 
@@ -485,7 +492,7 @@ def _execute_case(case, options, state):
                         report_params.mark(
                             decide_ctx.uuid, f"决策 {decision['choice']} 因页面过期被丢弃，未生效"
                         )
-                        _reset_after_stale(agent)
+                        _reset_after_discard(agent)
 
             if agent.state["status"] in {"done", "blocked"}:
                 break
@@ -515,10 +522,17 @@ def _execute_case(case, options, state):
             )
             with act_ctx:
                 stale = None
+                # 文本模型没能给出可写值。它发生在 browser.act 之前，所以【什么都没执行】，
+                # 与"页面过期"同属"可以重来"的一类——以前这种会一路抛到 conftest，
+                # 把一条还能救的用例判成 broken（实测 TC01：模型挑错了字段，文本模型
+                # 照约定回了 {"text": null}，用例当场死在 ValueError 上）。
+                no_text = None
                 try:
                     agent.command("act", {"fingerprint": page_before["fingerprint"]})
                 except StalePage as error:
                     stale = error
+                except NoTextValue as error:
+                    no_text = error
 
                 # act 抛 StalePage 有【两种】成因，报告写法必须分开——实测两种都出现过
                 # （M1-1 那一次：10 个执行步骤里有 2 条留痕，但只少了 1 个动作）：
@@ -530,7 +544,7 @@ def _execute_case(case, options, state):
                 acted = len(history) > before_actions
                 discarded = False
 
-                if not acted and stale is None:
+                if not acted and stale is None and no_text is None:
                     # 不变式：act 正常返回就必然追加过 history（agent.py:121）。
                     # 宁可响亮报错也不退化成 history[-1]——那样会把**上一步**的动作
                     # 显示成本步的结果，报告错得看不出来，比跑不起来更糟。
@@ -538,7 +552,17 @@ def _execute_case(case, options, state):
                         f"第 {steps} 步 act 正常返回却没有新增 history 记录；"
                         "报告的「执行」步骤将无法归属，拒绝继续（agent.py 的 act 语义变了？）"
                     )
-                if stale is not None:
+                if no_text is not None:
+                    # 报告里必须说清"这一步为什么没有动作"，否则它会与"动作静默失败"
+                    # 长得一模一样——而两者的处置完全不同（前者该换个目标重选）。
+                    report_params.mark(
+                        act_ctx.uuid,
+                        f"没有可写入的值，本次执行被丢弃（动作未落地）：{no_text}",
+                    )
+                    # reobserve=False：字段文本生成在 browser.act 之前，页面按定义没变。
+                    _reset_after_discard(agent, reobserve=False)
+                    discarded = True
+                elif stale is not None:
                     report_params.mark(
                         act_ctx.uuid,
                         "页面已过期，本次执行被丢弃（动作未落地）" if not acted
@@ -546,7 +570,7 @@ def _execute_case(case, options, state):
                     )
                     # 两种成因都要复位：act 在 observe 抛错时，状态还停在 "predicted"、
                     # page 还是动作前的那份（agent.py:142 之后的赋值都没跑到）。
-                    _reset_after_stale(agent)
+                    _reset_after_discard(agent)
                     discarded = not acted
                 else:
                     last = history[-1]
@@ -580,7 +604,7 @@ def _execute_case(case, options, state):
                     if screenshot_every_step:
                         attach_screenshot(agent.state["page"])
 
-                # 等待的收集放在最后：`_reset_after_stale` 里的 observe 也可能产生等待，
+                # 等待的收集放在最后：`_reset_after_discard` 里的 observe 也可能产生等待，
                 # 放在它之前收集会把那部分漏掉（下一轮开头会被清空，等于静默丢弃）。
                 long_waits, short_waits = _collect_waits(agent, threshold_ms)
                 if short_waits:

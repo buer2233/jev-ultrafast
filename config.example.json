@@ -1,5 +1,5 @@
 {
-  "_usage": "E9 测试环境、账号与知识图谱 MCP 配置模板。用法：cp config.example.json config.json 后填入真实值。⚠️ 本仓库（jev-ui-test）是 GitHub 公开仓库，config.json 已被 .gitignore 忽略——真实账号与内网地址【绝不可】提交。结构与优先级对齐 api-test-E9 的同名文件。base_url 决定用例里 {{ base_url }} 的解析结果；admin/employee1~5 供用例的 login 字段引用；mcp 用于查询 E9 功能实现以辅助编写用例。",
+  "_usage": "E9 测试环境、账号与知识图谱 MCP 配置模板。用法：cp config.example.json config.json 后填入真实值。⚠️ 本仓库（jev-ui-test）是 GitHub 公开仓库，config.json 已被 .gitignore 忽略——真实账号与内网地址【绝不可】提交。结构与优先级对齐 api-test-E9 的同名文件。base_url 决定用例里 {{ base_url }} 的解析结果；admin/employee1~6 供用例的 login 字段引用；mcp 用于查询 E9 功能实现以辅助编写用例。",
   "_报告层开关说明": "下面三个键按四级优先级生效：pytest 参数 > 环境变量 > 本文件 > 框架内置默认。缺键就用上一级/下一级，不会因为这里没写而报错。",
   "video_record": 1,
   "wait_stable": true,
@@ -33,6 +33,7 @@
     "password": ""
   },
   "employee5": {
+    "_说明": "人员05。**归档节点也由他兼**（源用例里的「人员06」）——见 e9_setup.ROLE_ARCHIVER 的注释：E9 里归档是自动的，不给任何人产生新待办，所以兼这一个角色不与他在审批3 的职责冲突。环境里如果另有第 6 个账号，再加一个 employee6 键并改 ROLE_ARCHIVER 与 TC05/TC08 的 login。",
     "user_name": "",
     "password": ""
   }

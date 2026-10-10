@@ -278,6 +278,103 @@ def ev_converted_fixture_is_loadable():
     return True, f"产出 {len(cases)} 条用例，全部可加载且符合项目规则"
 
 
+SKILL_MD = HERE.parent / "SKILL.md"
+
+
+def ev_graph_analysis_section_present():
+    """「先查图谱」这一步写进流程了——它是这份 skill 能不能产出可用 url 的前提。
+
+    守三件事，缺任何一件这步就会被悄悄跳过：
+      · 有独立的章节，且排在「写进哪个文件」**之前**（动手写 YAML 之前就该查完）；
+      · 说清本机没有 E9 源码、禁止本地 Grep/Read（不说清，模型会去本地找，必然落空）；
+      · 说清图谱里**没有** UI 元素定位（不说清，会拿图谱去替代 snapshot.js 观测）。
+    """
+    if not SKILL_MD.exists():
+        return False, f"缺 {SKILL_MD}"
+    text = SKILL_MD.read_text(encoding="utf-8")
+    problems = []
+    if "先查图谱" not in text:
+        problems.append("没有「先查图谱」章节")
+    if "e9-graph-query" not in text:
+        problems.append("没有点名 e9-graph-query")
+    if "本机没有 E9 源码" not in text:
+        problems.append("没说清「本机没有 E9 源码」，模型会去本地 Grep")
+    if "id / xpath / 选择器" not in text:
+        problems.append("没说清图谱查不到 UI 元素定位")
+    # 顺序：查图谱那节必须在「写进哪个文件」之前
+    if text.find("先查图谱") > text.find("写进哪个文件"):
+        problems.append("「先查图谱」排在写文件之后了——那时候 YAML 已经写完了")
+    if problems:
+        return False, "；".join(problems)
+    return True, "「先查图谱」章节在位、顺序正确，本地工具禁令与 UI 定位缺口均已写明"
+
+
+def ev_graph_handoff_link_resolves():
+    """指向 e9-graph-query 的相对链接可达。
+
+    这两份 SKILL 是配套的（一个查、一个写），任一方改名都会让另一边**静默指向
+    不存在的路径**——读者照着点会 404，却不会报错。所以互相引用的链接要钉住。
+    """
+    if not SKILL_MD.exists():
+        return False, f"缺 {SKILL_MD}"
+    text = SKILL_MD.read_text(encoding="utf-8")
+    targets = re.findall(r"\]\((\.\./e9-graph-query/[^)#\s]*)\)", text)
+    if not targets:
+        return False, "没有指向 e9-graph-query 的相对链接"
+    missing = [href for href in targets if not (HERE.parent / href).exists()]
+    if missing:
+        return False, f"这些指向 e9-graph-query 的链接不可达：{missing}"
+    return True, f"{len(targets)} 个指向 e9-graph-query 的链接全部可达"
+
+
+def ev_setup_names_documented():
+    """SKILL 里列的命名前置，与 `e9_setup.SETUPS` 里真实登记的**一一对上**。
+
+    这类"文档列一份清单、代码列另一份"的地方必然漂移：加了配方没写文档，
+    写用例的人就不知道有它，只好自己编个名字；文档写了没实现，写出来的用例
+    跑到执行期才炸。两边都要能发现。
+    """
+    if not SKILL_MD.exists():
+        return False, f"缺 {SKILL_MD}"
+    try:
+        from jev_ultrafast.framework.e9_setup import SETUPS
+    except ImportError as error:
+        return False, f"导入 e9_setup 失败：{error}"
+
+    text = SKILL_MD.read_text(encoding="utf-8")
+    undocumented = sorted(name for name in SETUPS if f"`{name}`" not in text)
+    if undocumented:
+        return False, f"这些前置在代码里登记了、SKILL 里没写：{undocumented}"
+    return True, f"{len(SETUPS)} 个命名前置全部在 SKILL 里有说明"
+
+
+def ev_ai_claim_pitfalls_documented():
+    """三类会把 `ai` 分拉低的写法写进 SKILL 了。
+
+    这三条以前只在 AGENTS.md 里，而 **AGENTS.md 是给改框架的人看的、
+    SKILL 才是给写用例的人看的**。转换时踩了坑才发现知识在错的地方——
+    实测 TC06 第一次跑 noul 0.54、第二次 0.08，两次都是这两类写法的锅。
+
+    断言"这三条在文档里"，是因为它们**没有别的守卫**：
+    措辞好坏只能在真跑时量，而真跑要花钱。
+    """
+    if not SKILL_MD.exists():
+        return False, f"缺 {SKILL_MD}"
+    text = SKILL_MD.read_text(encoding="utf-8")
+    problems = []
+    if "页面身份" not in text:
+        problems.append("没写「不要断言页面身份」这条")
+    if "复合句" not in text:
+        problems.append("没写「复合句要拆开」这条")
+    if "浮层 tooltip" not in text and "tooltip" not in text:
+        problems.append("没写「浮层 tooltip 不进页面文本」这条观测缺口")
+    if "0.54" not in text or "0.91" not in text:
+        problems.append("没带实测数字（0.54 / 0.91），读者没法判断轻重")
+    if problems:
+        return False, "；".join(problems)
+    return True, "三类拉低 ai 分的写法与实测数字都在文档里"
+
+
 CASES = [
     ("reads-xmind-zen", "XMind Zen 的 content.json 能抽出话题层级", "free", ev_reads_xmind_zen),
     ("reads-xmind8-xml", "XMind 8 的 content.xml 也能解析", "free", ev_reads_xmind8),
@@ -296,6 +393,22 @@ CASES = [
     (
         "repo-cases-follow-project-rules", "仓库用例守住内网/ecid/负向对照三条规则",
         "free", ev_repo_cases_follow_project_rules,
+    ),
+    (
+        "graph-analysis-section-present", "「先查图谱」章节在位且排在动手写之前",
+        "free", ev_graph_analysis_section_present,
+    ),
+    (
+        "graph-handoff-link-resolves", "指向 e9-graph-query 的相对链接可达",
+        "free", ev_graph_handoff_link_resolves,
+    ),
+    (
+        "setup-names-documented", "命名前置清单与 e9_setup.SETUPS 一一对上",
+        "free", ev_setup_names_documented,
+    ),
+    (
+        "ai-claim-pitfalls-documented", "三类拉低 ai 分的写法与实测数字已写进文档",
+        "free", ev_ai_claim_pitfalls_documented,
     ),
     (
         "converted-fixture-is-loadable", "模型转出的 YAML 能过 loader（需先跑 skill）",

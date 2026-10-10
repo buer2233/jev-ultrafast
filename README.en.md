@@ -157,7 +157,7 @@ executes them and produces the report; if that feature has not been written as a
 | [Measured speed](docs/performance.md) | Decision-time distribution, how it is compared against the old approach, reproduction commands |
 | [Design notes](docs/design.md) | Kernel mechanics: dynamic "operation + target", snapshots and identity, freshness and occlusion checks, waiting strategy |
 | [AGENTS.md](AGENTS.md) | Engineering conventions: layer boundaries, assertion policy, retry policy, credentials and repository boundaries |
-| [`.claude/skills/`](.claude/skills/) | The three skills: `/nl-case-author`, `/nl-case-run`, `/run-jev` |
+| [`.claude/skills/`](.claude/skills/) | The four skills: `/nl-case-author`, `/nl-case-run`, `/run-jev`, `/e9-graph-query` |
 
 ## Upstream
 
